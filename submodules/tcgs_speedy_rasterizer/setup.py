@@ -10,17 +10,16 @@
 #
 
 from setuptools import setup
-from torch.utils.cpp_extension import CUDAExtension, BuildExtension
 import os
-os.path.dirname(os.path.abspath(__file__))
 
 base_dir = os.path.dirname(os.path.abspath(__file__))
-tcgs_dir = tcgs_dir = os.path.join(base_dir, "cuda_rasterizer/tcgs")
+tcgs_dir = os.path.join(base_dir, "cuda_rasterizer/tcgs")
 
-setup(
-    name="diff_gaussian_rasterization",
-    packages=['diff_gaussian_rasterization'],
-    ext_modules=[
+# Try to import torch - if not available, provide minimal setup for metadata extraction
+try:
+    from torch.utils.cpp_extension import CUDAExtension, BuildExtension
+    
+    ext_modules = [
         CUDAExtension(
             name="diff_gaussian_rasterization._C",
             sources=[
@@ -44,8 +43,18 @@ setup(
                 "cxx": ["-DTCGS_ENABLED=1"]
             }
         )
-    ],
-    cmdclass={
+    ]
+    cmdclass = {
         'build_ext': BuildExtension
     }
+except ImportError:
+    # torch not available during metadata extraction - will be available during build
+    ext_modules = []
+    cmdclass = {}
+
+setup(
+    name="diff_gaussian_rasterization",
+    packages=['diff_gaussian_rasterization'],
+    ext_modules=ext_modules,
+    cmdclass=cmdclass
 )
