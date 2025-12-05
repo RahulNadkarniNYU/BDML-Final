@@ -15,68 +15,62 @@ echo ""
 echo "Data will be downloaded to: $DATA_DIR"
 echo ""
 
-# Method 1: Using gdown (for Google Drive)
-# The MipNeRF-360 dataset is on Google Drive, so we need gdown
-if ! command -v gdown &> /dev/null; then
-    echo "Installing gdown for Google Drive downloads..."
-    pip install gdown
+# Direct download link from Google Cloud Storage
+DATASET_URL="https://storage.googleapis.com/gresearch/refraw360/360_extra_scenes.zip"
+OUTPUT_FILE="360_extra_scenes.zip"
+
+echo "Downloading MipNeRF-360 dataset..."
+echo "URL: $DATASET_URL"
+echo ""
+
+# Download using wget
+if command -v wget &> /dev/null; then
+    echo "Using wget to download..."
+    wget -c "$DATASET_URL" -O "$OUTPUT_FILE"
+elif command -v curl &> /dev/null; then
+    echo "Using curl to download..."
+    curl -L -C - "$DATASET_URL" -o "$OUTPUT_FILE"
+else
+    echo "Error: Neither wget nor curl is available. Please install one of them."
+    exit 1
 fi
 
-echo "Downloading MipNeRF-360 dataset from Google Drive..."
-echo ""
-echo "Note: You need to get the Google Drive file IDs from:"
-echo "  https://jonbarron.info/mipnerf360/"
-echo ""
-echo "The dataset is split into two parts. To download:"
-echo ""
-echo "1. Visit https://jonbarron.info/mipnerf360/"
-echo "2. Click 'Dataset Pt. 1' - copy the Google Drive file ID from the URL"
-echo "3. Click 'Dataset Pt. 2' - copy the Google Drive file ID from the URL"
-echo ""
-echo "Then run:"
-echo "  gdown --id <PART1_FILE_ID> -O mipnerf360_part1.tar.gz"
-echo "  gdown --id <PART2_FILE_ID> -O mipnerf360_part2.tar.gz"
-echo ""
-echo "Or if you have direct download URLs (after getting download permission):"
-echo "  wget --no-check-certificate 'https://drive.google.com/uc?export=download&id=<FILE_ID>' -O mipnerf360_part1.tar.gz"
-echo ""
-
-# Method 2: Direct wget (if you have the download URLs)
-# Uncomment and fill in the URLs if you have them:
-# echo "Downloading Part 1..."
-# wget -c "https://drive.google.com/uc?export=download&id=<FILE_ID_1>" -O mipnerf360_part1.tar.gz
-# 
-# echo "Downloading Part 2..."
-# wget -c "https://drive.google.com/uc?export=download&id=<FILE_ID_2>" -O mipnerf360_part2.tar.gz
-# 
-# echo "Extracting..."
-# tar -xzf mipnerf360_part1.tar.gz
-# tar -xzf mipnerf360_part2.tar.gz
-
-# Quick download for a single scene (if available)
-echo "=========================================="
-echo "Quick Download Option: Single Scene"
-echo "=========================================="
-echo ""
-echo "If you only need one scene for testing/profiling, you can download"
-echo "individual scenes. Common scenes:"
-echo "  - room (indoor, small)"
-echo "  - bicycle (outdoor)"
-echo "  - garden (outdoor)"
-echo ""
-echo "Check the MipNeRF-360 website for individual scene download links."
-echo ""
-
-echo "After downloading, extract with:"
-echo "  tar -xzf mipnerf360_part1.tar.gz"
-echo "  tar -xzf mipnerf360_part2.tar.gz"
-echo ""
-echo "Your directory structure should be:"
-echo "  $DATA_DIR/"
-echo "    ├── bicycle/"
-echo "    │   ├── sparse/0/"
-echo "    │   └── images/"
-echo "    ├── room/"
-echo "    └── ... (other scenes)"
-echo ""
+if [ $? -eq 0 ]; then
+    echo ""
+    echo "Download complete! Extracting..."
+    
+    # Extract the zip file
+    if command -v unzip &> /dev/null; then
+        unzip -q "$OUTPUT_FILE"
+        echo "Extraction complete!"
+    else
+        echo "Error: unzip is not available. Please install unzip or extract manually."
+        echo "You can extract with: unzip $OUTPUT_FILE"
+        exit 1
+    fi
+    
+    echo ""
+    echo "=========================================="
+    echo "Download and extraction complete!"
+    echo "=========================================="
+    echo ""
+    echo "Dataset is located at: $DATA_DIR"
+    echo ""
+    echo "Available scenes:"
+    ls -d */ 2>/dev/null | sed 's|/||' | sed 's/^/  - /'
+    echo ""
+    echo "Each scene should have:"
+    echo "  scene_name/"
+    echo "    ├── sparse/0/  (COLMAP reconstruction)"
+    echo "    └── images/    (input images)"
+    echo ""
+    echo "You can now use this dataset for profiling:"
+    echo "  cd /scratch/rn2592/BDML-Final"
+    echo "  ./profile_quick.sh -s $DATA_DIR/<scene_name> -m <model_path>/<scene_name> --iteration 30000"
+    echo ""
+else
+    echo ""
+    echo "Error: Download failed. Please check your internet connection and try again."
+    exit 1
+fi
 
