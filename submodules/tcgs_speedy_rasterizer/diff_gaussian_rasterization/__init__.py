@@ -12,7 +12,28 @@
 from typing import NamedTuple
 import torch.nn as nn
 import torch
-from . import _C
+
+try:
+    from . import _C
+except ImportError as e:
+    import sys
+    import os
+    error_msg = f"""
+Failed to import the compiled CUDA extension module '_C'. 
+
+This usually means the extension wasn't built successfully. Please try:
+
+1. Rebuild the extension:
+   cd {os.path.dirname(os.path.dirname(os.path.abspath(__file__)))}
+   pip install -e . --no-build-isolation --force-reinstall
+
+2. Check for build errors in the output above.
+
+3. Ensure CUDA is properly installed and CUDA_HOME is set if needed.
+
+Original error: {e}
+"""
+    raise ImportError(error_msg) from e
 
 def cpu_deep_copy_tuple(input_tuple):
     copied_tensors = [item.cpu().clone() if isinstance(item, torch.Tensor) else item for item in input_tuple]
