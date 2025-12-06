@@ -393,12 +393,12 @@ void TCGS::renderCUDA_Forward(
                 fprintf(stderr, "TCGS: Failed to allocate feature buffer: %s\n", cudaGetErrorString(err));
                 return;
             }
-            transform_coefs<< <(P + 255) / 256, 256>> >(
+            transform_coefs<<<(P + 255) / 256, 256>>>(
                 P, colors, depths, conic_opacity, feature_encoded, depth
             );
             cudaDeviceSynchronize();
             
-            renderCUDA_TCGS<< <grid, block>> >(
+            renderCUDA_TCGS<<<grid, block>>>(
                 ranges, point_list,
                 width, height,
                 means2D, feature_encoded, conic_opacity,
@@ -413,7 +413,7 @@ void TCGS::renderCUDA_Forward(
     
     uint2* feature_encoded = g_feature_encoded_buffer;
     
-    transform_coefs<< <(P + 255) / 256, 256>> >(
+    transform_coefs<<<(P + 255) / 256, 256>>>(
         P, colors, depths, conic_opacity, feature_encoded, depth
     );
     cudaError_t err = cudaGetLastError();
@@ -423,7 +423,7 @@ void TCGS::renderCUDA_Forward(
     }
 
     //Running TCGS
-    renderCUDA_TCGS<< <grid, block>> >(
+    renderCUDA_TCGS<<<grid, block>>>(
         ranges, point_list,
         width, height,
         means2D, feature_encoded, conic_opacity,
