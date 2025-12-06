@@ -180,8 +180,8 @@ class _RasterizeGaussians(torch.autograd.Function):
             grad_scales,
             grad_rotations,
             grad_cov3Ds_precomp,
-            grad_gaussians2,
-            None,
+            None,  # scores - doesn't require grad (passed as None)
+            None,  # raster_settings - doesn't require grad (NamedTuple)
         )
 
         return grads
