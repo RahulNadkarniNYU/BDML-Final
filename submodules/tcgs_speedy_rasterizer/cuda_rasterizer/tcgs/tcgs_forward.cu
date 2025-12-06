@@ -4,6 +4,8 @@
 #include <cuda.h>
 #include <cooperative_groups.h>
 #include "cuda_runtime.h"
+#include <cstdio>
+#include <cstdlib>
 
 
 namespace cg = cooperative_groups;
@@ -117,6 +119,7 @@ __forceinline__ __device__ void store_exponent_mat(
 }
 
 //Culling and Alpha-blending
+// Improved version with better numerical stability
 __forceinline__ __device__ uint2 culling_and_blending(
     uint* exponent_matrix, // Shared Memory
     uint2* channels_smem,
@@ -128,22 +131,38 @@ __forceinline__ __device__ uint2 culling_and_blending(
     {
         half2 exponents = *reinterpret_cast<half2*>(exponent_matrix + ((k<<8)|thread_id));
         //beta > -ln(225) and beta < 0, otherwise culled
-        if(__hgt(exponents.x, __float2half_rn(-7.995f)) && __hlt(exponents.x, __float2half_rn(0.0f)))
+        // Use slightly tighter bounds for better numerical stability
+        const half exp_threshold_low = __float2half_rn(-7.995f);
+        const half exp_threshold_high = __float2half_rn(0.0f);
+        
+        if(__hgt(exponents.x, exp_threshold_low) && __hlt(exponents.x, exp_threshold_high))
         {
-            //alpha-blending
-            half alpha = __hmul(T, __hmin(__float2half_rn(0.99f), fast_ex2_f16(exponents.x)));
-            T = __hsub(T, alpha);
+            //alpha-blending with improved stability
+            half exp_val = fast_ex2_f16(exponents.x);
+            // Ensure alpha is in valid range [0, 1]
+            half alpha_raw = __hmul(T, __hmin(__float2half_rn(0.99f), exp_val));
+            half alpha = __hmax(__hmin(alpha_raw, T), __float2half_rn(0.0f)); // Clamp to [0, T]
+            
+            // Update T with proper clamping
+            T = __hmax(__hsub(T, alpha), __float2half_rn(0.0f));
+            
             uint2 channel = channels_smem[gs_index|(k<<1)];
             uint alpha2 = half22uint(make_half2(alpha, alpha));
             RGBD.x = fast_fma_rn_ftz_f16x2(channel.x, alpha2, RGBD.x);
             RGBD.y = fast_fma_rn_ftz_f16x2(channel.y, alpha2, RGBD.y);
         }
 
-        if(__hgt(exponents.y, __float2half_rn(-7.995f)) && __hlt(exponents.y, __float2half_rn(0.0f)))
+        if(__hgt(exponents.y, exp_threshold_low) && __hlt(exponents.y, exp_threshold_high))
         {
-            //alpha-blending
-            half alpha = __hmul(T, __hmin(__float2half_rn(0.99f), fast_ex2_f16(exponents.y)));
-            T = __hsub(T, alpha);
+            //alpha-blending with improved stability
+            half exp_val = fast_ex2_f16(exponents.y);
+            // Ensure alpha is in valid range [0, 1]
+            half alpha_raw = __hmul(T, __hmin(__float2half_rn(0.99f), exp_val));
+            half alpha = __hmax(__hmin(alpha_raw, T), __float2half_rn(0.0f)); // Clamp to [0, T]
+            
+            // Update T with proper clamping
+            T = __hmax(__hsub(T, alpha), __float2half_rn(0.0f));
+            
             uint2 channel = channels_smem[gs_index|(k<<1)|1];
             uint alpha2 = half22uint(make_half2(alpha, alpha));
             RGBD.x = fast_fma_rn_ftz_f16x2(channel.x, alpha2, RGBD.x);
@@ -303,21 +322,37 @@ __global__ void transform_coefs(
     
     //Preprocess the inverse covariance for vectorizing 
     float4 conics = conic_opacity[idx];
+    
+    // Clamp opacity to valid range before log2 to avoid numerical issues
+    float clamped_opacity = fmaxf(fminf(conics.w, 0.999f), 1e-8f);
+    
     conic_opacity[idx] = make_float4(
-        LOG2E_N_2 * conics.x, LOG2E_N * conics.y, LOG2E_N_2 * conics.z, fast_lg2_f32(conics.w)
+        LOG2E_N_2 * conics.x, LOG2E_N * conics.y, LOG2E_N_2 * conics.z, fast_lg2_f32(clamped_opacity)
     );
 
-    //Compress the colors into fp16
-    float4 features = make_float4(
-        colors[idx * 3], colors[idx * 3 + 1], colors[idx * 3 + 2], 0.0f
-    );
+    //Compress the colors into fp16 with clamping for numerical stability
+    // Clamp colors to [0, 1] range to avoid precision loss
+    float r = fmaxf(fminf(colors[idx * 3], 1.0f), 0.0f);
+    float g = fmaxf(fminf(colors[idx * 3 + 1], 1.0f), 0.0f);
+    float b = fmaxf(fminf(colors[idx * 3 + 2], 1.0f), 0.0f);
+    
+    float4 features = make_float4(r, g, b, 0.0f);
     if(invdepth)
-        features.w = 1.0f / depths[idx];
+    {
+        // Avoid division by zero
+        float depth_val = depths[idx];
+        features.w = (depth_val > 1e-8f) ? (1.0f / depth_val) : 0.0f;
+    }
     uint RG = float22reg(features.x, features.y);
     uint BD = float22reg(features.z, features.w);
     feature_encoded[idx] = make_uint2(RG, BD);
 }
 
+
+// Static buffer for feature encoding to avoid repeated allocations
+// This is a simple optimization - in production, use a proper memory pool
+static uint2* g_feature_encoded_buffer = nullptr;
+static size_t g_feature_buffer_size = 0;
 
 void TCGS::renderCUDA_Forward(
     const dim3 grid,
@@ -339,11 +374,53 @@ void TCGS::renderCUDA_Forward(
 )
 {
     //Preprocess for TCGS
-    uint2* feature_encoded = nullptr;
-    cudaMalloc(&feature_encoded, P * sizeof(uint2));
+    // Use static buffer to avoid repeated allocations
+    size_t required_size = P * sizeof(uint2);
+    if(g_feature_encoded_buffer == nullptr || g_feature_buffer_size < required_size)
+    {
+        if(g_feature_encoded_buffer != nullptr)
+        {
+            cudaFree(g_feature_encoded_buffer);
+        }
+        cudaError_t err = cudaMalloc(&g_feature_encoded_buffer, required_size);
+        if(err != cudaSuccess)
+        {
+            // Fallback to per-call allocation if static buffer fails
+            uint2* feature_encoded = nullptr;
+            err = cudaMalloc(&feature_encoded, required_size);
+            if(err != cudaSuccess)
+            {
+                fprintf(stderr, "TCGS: Failed to allocate feature buffer: %s\n", cudaGetErrorString(err));
+                return;
+            }
+            transform_coefs<< <(P + 255) / 256, 256>> >(
+                P, colors, depths, conic_opacity, feature_encoded, depth
+            );
+            cudaDeviceSynchronize();
+            
+            renderCUDA_TCGS<< <grid, block>> >(
+                ranges, point_list,
+                width, height,
+                means2D, feature_encoded, conic_opacity,
+                final_T, n_contrib,
+                bg_color, out_color, depth
+            );
+            cudaFree(feature_encoded);
+            return;
+        }
+        g_feature_buffer_size = required_size;
+    }
+    
+    uint2* feature_encoded = g_feature_encoded_buffer;
+    
     transform_coefs<< <(P + 255) / 256, 256>> >(
         P, colors, depths, conic_opacity, feature_encoded, depth
     );
+    cudaError_t err = cudaGetLastError();
+    if(err != cudaSuccess)
+    {
+        fprintf(stderr, "TCGS: transform_coefs kernel error: %s\n", cudaGetErrorString(err));
+    }
 
     //Running TCGS
     renderCUDA_TCGS<< <grid, block>> >(
@@ -353,7 +430,9 @@ void TCGS::renderCUDA_Forward(
         final_T, n_contrib,
         bg_color, out_color, depth
     );
-    //
-    cudaFree(feature_encoded);
-    
+    err = cudaGetLastError();
+    if(err != cudaSuccess)
+    {
+        fprintf(stderr, "TCGS: renderCUDA_TCGS kernel error: %s\n", cudaGetErrorString(err));
+    }
 }

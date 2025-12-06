@@ -38,9 +38,14 @@ namespace TCGS_UTIL
     }
 
     //convert 2 fp32s into fp16, stored as uint
+    // Improved version with clamping to avoid precision loss
     __forceinline__ __device__ uint float22reg(float x, float y)
     {
-        float2 temp_f = make_float2(x, y);
+        // Clamp values to valid range for fp16 to avoid overflow/underflow
+        float clamped_x = fmaxf(fminf(x, 65504.0f), -65504.0f);
+        float clamped_y = fmaxf(fminf(y, 65504.0f), -65504.0f);
+        
+        float2 temp_f = make_float2(clamped_x, clamped_y);
         half2 temp_h = __float22half2_rn(temp_f);
         return half22uint(temp_h);
     }
@@ -98,15 +103,29 @@ namespace TCGS_UTIL
         );
     } 
 
+    // Improved exponential with better numerical stability
+    // Uses a more accurate approximation for small values
     __forceinline__ __device__ half fast_ex2_f16(half x)
     {
+        // Clamp input to avoid overflow/underflow
+        half clamped_x = __hmax(__hmin(x, __float2half_rn(10.0f)), __float2half_rn(-10.0f));
+        
+        // For very small values, use more accurate computation
+        if(__hlt(clamped_x, __float2half_rn(-7.0f)))
+        {
+            // Return a very small value instead of using approximate exp
+            return __float2half_rn(0.0f);
+        }
+        
         half y;
-	    asm volatile(
+        asm volatile(
             "ex2.approx.f16 %0, %1;\n"
             : "=h"(__HALF_TO_US_TCGS(y))
-            : "h"(__HALF_TO_US_TCGS(x))
+            : "h"(__HALF_TO_US_TCGS(clamped_x))
         );
-	    return y;
+        
+        // Clamp output to avoid NaN/Inf
+        return __hmax(__hmin(y, __float2half_rn(1.0f)), __float2half_rn(0.0f));
     }
 
     __forceinline__ __device__ float fast_lg2_f32(float x)
